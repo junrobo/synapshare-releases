@@ -257,12 +257,14 @@ jobs:
           fi
           export SYNAPSHARE_ANDROID_KEYSTORE="$RUNNER_TEMP/release.jks"
           echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$SYNAPSHARE_ANDROID_KEYSTORE"
-          (cd android && ./gradlew --no-daemon :app:assembleRelease)
+          # The APK is for direct download; Google Play takes the App Bundle.
+          (cd android && ./gradlew --no-daemon :app:assembleRelease :app:bundleRelease)
           rm -f "$SYNAPSHARE_ANDROID_KEYSTORE"
           apk="android/app/build/outputs/apk/release/SynapShare-$VERSION-android.apk"
           "$ANDROID_HOME"/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)/apksigner verify "$apk"
           mkdir -p "$RUNNER_TEMP/release"
           cp "$apk" "$RUNNER_TEMP/release/"
+          cp android/app/build/outputs/bundle/release/app-release.aab "$RUNNER_TEMP/release/SynapShare-$VERSION-android.aab"
           echo "built=true" >> "$GITHUB_OUTPUT"
       # mapping.txt stays out of this public repository (it undoes the
       # obfuscation). R8 is deterministic: rebuild this ref to regenerate it.
