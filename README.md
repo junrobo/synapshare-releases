@@ -64,10 +64,10 @@ One-time setup:
     `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`: Android release signing
     (without them the APK is skipped). Keep a backup of the keystore: an app
     signed with a lost key can never be updated.
-- **Repository settings**: a ruleset on `main` that blocks force pushes and
-  requires pull requests; *Actions → General*: "Read repository contents"
-  workflow permissions, and "Allow GitHub Actions to create and approve pull
-  requests" off.
+- **Repository settings**: ruleset `protect-main` blocks force pushes to and
+  deletion of `main`; *Actions → General* allows only GitHub-owned actions,
+  gives workflows read-only tokens by default, and does not let Actions
+  create or approve pull requests.
 
 Workflow rules (details in the workflow's header): manual dispatch only; no
 tests, workflow artifacts or caches of the source, because this
