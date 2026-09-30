@@ -1,0 +1,310 @@
+# Builds a SynapShare release from the private source repository and
+# publishes the packages here.
+#
+# This repository is public, so everything a run prints is public. Rules:
+# - Only manual dispatch. No push or pull_request trigger: nobody but a
+#   maintainer can start a run, and fork PRs never see a secret.
+# - Every secret (deploy key, signing material) lives in the protected
+#   "release" environment, so each run waits for a maintainer's approval
+#   before any job can read one.
+# - Never upload workflow artifacts or caches of the source: they are
+#   downloadable. Packages go straight to a draft release.
+# - No tests here: a failing test prints source lines into the public log.
+#   Tests run in the private repository.
+# - Third-party code runs only from GitHub-owned actions pinned to a commit
+#   and from hash-locked pip requirements (requirements-build.lock).
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. 0.3.0 (must match pyproject.toml at the ref)"
+        required: true
+      ref:
+        description: "Branch or tag of junrobo/synapshare to build (default: v<version>)"
+        required: false
+        default: ""
+      publish:
+        description: "Publish the release when every package is built (otherwise it stays a draft)"
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  SOURCE_REPO: junrobo/synapshare
+  OSS_REPO: junrobo/synapshare-oss
+
+jobs:
+  prepare:
+    name: Prepare draft release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.inputs.outputs.version }}
+      ref: ${{ steps.inputs.outputs.ref }}
+    steps:
+      - name: Validate inputs
+        id: inputs
+        env:
+          VERSION: ${{ inputs.version }}
+          REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must look like 1.2.3"
+            exit 1
+          fi
+          REF="${REF:-v$VERSION}"
+          if ! [[ "$REF" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::ref contains unsupported characters"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.inputs.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            if [ "$(gh release view "$tag" --json isDraft -q .isDraft)" != "true" ]; then
+              echo "::error::$tag is already published; bump the version instead of rebuilding it"
+              exit 1
+            fi
+            echo "Reusing draft $tag"
+          else
+            gh release create "$tag" --draft --title "SynapShare $VERSION" \
+              --notes "Draft - packages are being built."
+          fi
+
+  desktop:
+    name: Package ${{ matrix.name }}
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    environment: release
+    timeout-minutes: 120
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-14
+            python: true
+          - name: Windows
+            os: windows-2022
+            python: true
+          - name: Linux-x86_64
+            os: ubuntu-24.04
+            python: false
+          - name: Linux-aarch64
+            os: ubuntu-24.04-arm
+            python: false
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      # fetch_deskflow.py queries the public Deskflow releases API with it.
+      GITHUB_TOKEN: ${{ github.token }}
+      SYNAPSHARE_SKIP_PIP_INSTALL: "1"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ needs.prepare.outputs.ref }}
+          ssh-key: ${{ secrets.SYNAPSHARE_DEPLOY_KEY }}
+          persist-credentials: false
+      # Over plain HTTPS: the public submodule must not reuse the deploy key.
+      - name: Check out synapshare-oss
+        shell: bash
+        run: git submodule update --init --depth 1
+      - name: Check version
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)"
+          if [ "$actual" != "$VERSION" ]; then
+            echo "::error::pyproject.toml at this ref is $actual, not $VERSION"
+            exit 1
+          fi
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: matrix.python
+        with:
+          python-version: "3.11"
+      - name: Install build dependencies
+        if: matrix.python
+        shell: bash
+        run: python -m pip install --require-hashes -r requirements-build.lock
+      - name: Install Flatpak tooling
+        if: ${{ !matrix.python }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+      - name: Import macOS signing certificate
+        if: matrix.name == 'macOS'
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$MACOS_CERTIFICATE_P12_BASE64" ]; then
+            echo "::warning::No macOS signing certificate; the DMG will be ad-hoc signed."
+            exit 0
+          fi
+          KEYCHAIN_PASSWORD="${MACOS_KEYCHAIN_PASSWORD:-$(uuidgen)}"
+          KEYCHAIN_PATH="$RUNNER_TEMP/synapshare-signing.keychain-db"
+          CERTIFICATE_PATH="$RUNNER_TEMP/synapshare-signing.p12"
+          echo "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          rm -f "$CERTIFICATE_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed 's/[ "]//g')
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+      - name: Build macOS package
+        if: matrix.name == 'macOS'
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: bash scripts/package_macos.sh
+      - name: Build Windows package
+        if: matrix.name == 'Windows'
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File scripts/package_windows.ps1
+      - name: Build Flatpak
+        if: ${{ !matrix.python }}
+        run: bash scripts/package_flatpak.sh
+      - name: Collect release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/release"
+          cp dist/packages/* "$RUNNER_TEMP/release/"
+          # Which Deskflow build each binary package bundles; publish checks
+          # that its source is archived in synapshare-oss.
+          for manifest in vendor/deskflow/*/deskflow-manifest.json; do
+            [ -f "$manifest" ] || continue
+            platform="$(basename "$(dirname "$manifest")")"
+            cp "$manifest" "$RUNNER_TEMP/release/deskflow-manifest-$platform.json"
+          done
+          ls -l "$RUNNER_TEMP/release"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/release/*
+      - name: Upload to draft release
+        shell: bash
+        run: gh release upload "v$VERSION" "$RUNNER_TEMP"/release/* --clobber
+
+  android:
+    name: Package Android
+    needs: prepare
+    runs-on: ubuntu-24.04
+    environment: release
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ needs.prepare.outputs.ref }}
+          ssh-key: ${{ secrets.SYNAPSHARE_DEPLOY_KEY }}
+          persist-credentials: false
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Build signed APK
+        id: build
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          SYNAPSHARE_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          SYNAPSHARE_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          SYNAPSHARE_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "::warning::No Android release keystore; skipping the APK (an unsigned APK cannot be installed)."
+            echo "built=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          export SYNAPSHARE_ANDROID_KEYSTORE="$RUNNER_TEMP/release.jks"
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$SYNAPSHARE_ANDROID_KEYSTORE"
+          (cd android && ./gradlew --no-daemon :app:assembleRelease)
+          rm -f "$SYNAPSHARE_ANDROID_KEYSTORE"
+          apk="android/app/build/outputs/apk/release/SynapShare-$VERSION-android.apk"
+          "$ANDROID_HOME"/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)/apksigner verify "$apk"
+          mkdir -p "$RUNNER_TEMP/release"
+          cp "$apk" "$RUNNER_TEMP/release/"
+          echo "built=true" >> "$GITHUB_OUTPUT"
+      # mapping.txt stays out of this public repository (it undoes the
+      # obfuscation). R8 is deterministic: rebuild this ref to regenerate it.
+      - name: Attest build provenance
+        if: steps.build.outputs.built == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/release/*
+      - name: Upload to draft release
+        if: steps.build.outputs.built == 'true'
+        run: gh release upload "v$VERSION" "$RUNNER_TEMP"/release/* --clobber
+
+  publish:
+    name: Publish release
+    needs: [prepare, desktop, android]
+    if: inputs.publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download packages
+        run: gh release download "v$VERSION" --dir "$RUNNER_TEMP/release"
+      # Refuses to publish unless synapshare-oss has the GPL/LGPL source
+      # archive of every Deskflow build these packages bundle.
+      - name: Verify source release in synapshare-oss
+        run: python3 .github/scripts/verify_release.py "$VERSION" "$RUNNER_TEMP/release"
+      - name: Checksums and notes
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/release"
+          rm -f SHA256SUMS
+          sha256sum -- * > SHA256SUMS
+          gh release upload "v$VERSION" SHA256SUMS --clobber
+          python3 "$GITHUB_WORKSPACE/.github/scripts/verify_release.py" --notes "$VERSION" . > "$RUNNER_TEMP/notes.md"
+          gh release edit "v$VERSION" --notes-file "$RUNNER_TEMP/notes.md"
+      - name: Publish
+        run: gh release edit "v$VERSION" --draft=false --latest
