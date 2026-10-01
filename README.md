@@ -9,7 +9,7 @@ software KVM and file-sharing app for Windows, macOS, Linux and Android.
 |---|---|
 | Windows 10 / 11 (64-bit) | `SynapShare-<version>-Setup.exe`, or the portable `.zip` |
 | macOS (Apple Silicon) | `SynapShare-<version>-macos.dmg` |
-| Linux x86_64 / aarch64 | `SynapShare-<version>-<arch>.flatpak` + `install-synapshare.sh` |
+| Linux x86_64 / aarch64 | `SynapShare-<version>-<arch>.run` (run with `bash`), or the `.flatpak` bundle. Easiest: `curl -fsSL https://synapshare-16ced.web.app/install.sh \| bash` |
 | Android 8.0+ | `SynapShare-<version>-android.apk` |
 
 Found a bug? [Open an issue](https://github.com/junrobo/synapshare-releases/issues).
