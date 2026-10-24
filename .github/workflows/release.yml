@@ -18,6 +18,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       GITHUB_TOKEN: ${{ github.token }}
+      GH_REPO: junrobo/synapshare-releases
     strategy:
       fail-fast: false
       matrix:
@@ -67,6 +68,7 @@ jobs:
         run: python -m unittest discover -s tests
         env:
           PYTHONPATH: src
+          QT_QPA_PLATFORM: offscreen
 
       - name: Build package
         run: ${{ matrix.command }}
@@ -78,14 +80,14 @@ jobs:
           tag="${GITHUB_REF_NAME:-continuous}"
           if [ "${GITHUB_REF_TYPE:-}" != "tag" ]; then
             tag="continuous"
-            gh release view "$tag" >/dev/null 2>&1 || \
-              gh release create "$tag" --prerelease --title "Continuous build" \
+            gh release view "$tag" --repo junrobo/synapshare-releases >/dev/null 2>&1 || \
+              gh release create "$tag" --repo junrobo/synapshare-releases --prerelease --title "Continuous build" \
                 --notes "Rolling packages from latest develop." || true
           else
-            gh release view "$tag" >/dev/null 2>&1 || \
-              gh release create "$tag" --title "SynapShare $tag" --notes "Release $tag" || true
+            gh release view "$tag" --repo junrobo/synapshare-releases >/dev/null 2>&1 || \
+              gh release create "$tag" --repo junrobo/synapshare-releases --title "SynapShare $tag" --notes "Release $tag" || true
           fi
-          gh release upload "$tag" dist/packages/* --clobber
+          gh release upload "$tag" dist/packages/* --repo junrobo/synapshare-releases --clobber
 
       - name: Upload Artifact
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
@@ -102,6 +104,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       GITHUB_TOKEN: ${{ github.token }}
+      GH_REPO: junrobo/synapshare-releases
     steps:
       - name: Checkout private source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -129,14 +132,14 @@ jobs:
           tag="${GITHUB_REF_NAME:-continuous}"
           if [ "${GITHUB_REF_TYPE:-}" != "tag" ]; then
             tag="continuous"
-            gh release view "$tag" >/dev/null 2>&1 || \
-              gh release create "$tag" --prerelease --title "Continuous build" \
+            gh release view "$tag" --repo junrobo/synapshare-releases >/dev/null 2>&1 || \
+              gh release create "$tag" --repo junrobo/synapshare-releases --prerelease --title "Continuous build" \
                 --notes "Rolling packages from latest develop." || true
           else
-            gh release view "$tag" >/dev/null 2>&1 || \
-              gh release create "$tag" --title "SynapShare $tag" --notes "Release $tag" || true
+            gh release view "$tag" --repo junrobo/synapshare-releases >/dev/null 2>&1 || \
+              gh release create "$tag" --repo junrobo/synapshare-releases --title "SynapShare $tag" --notes "Release $tag" || true
           fi
-          gh release upload "$tag" android/app/build/outputs/apk/**/*.apk --clobber
+          gh release upload "$tag" android/app/build/outputs/apk/**/*.apk --repo junrobo/synapshare-releases --clobber
 
       - name: Upload Artifact
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
