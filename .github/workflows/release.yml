@@ -41,7 +41,7 @@ jobs:
 
     steps:
       - name: Checkout private source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: junrobo/synapshare
           ssh-key: ${{ secrets.SYNAPSHARE_DEPLOY_KEY }}
@@ -49,7 +49,7 @@ jobs:
           ref: develop
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
         with:
           python-version: "3.11"
 
@@ -88,7 +88,7 @@ jobs:
           gh release upload "$tag" dist/packages/* --clobber
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
         with:
           name: synapshare-${{ matrix.name }}
           path: ${{ matrix.artifact }}
@@ -104,20 +104,17 @@ jobs:
       GITHUB_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout private source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: junrobo/synapshare
           ssh-key: ${{ secrets.SYNAPSHARE_DEPLOY_KEY }}
           ref: develop
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@3a4f6e1af504cf6a31855fa899c6aa5355ba6c12 # v4.7.0
         with:
           distribution: 'temurin'
           java-version: '17'
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
 
       - name: Build APKs
         working-directory: android
@@ -142,7 +139,7 @@ jobs:
           gh release upload "$tag" android/app/build/outputs/apk/**/*.apk --clobber
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
         with:
           name: synapshare-Android
           path: android/app/build/outputs/apk/**/*.apk
