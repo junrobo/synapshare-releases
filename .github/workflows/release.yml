@@ -119,11 +119,40 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Decode release keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 secret is not set; refusing to ship an unsigned APK."
+            exit 1
+          fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/synapshare-release.jks"
+          echo "SYNAPSHARE_ANDROID_KEYSTORE=$RUNNER_TEMP/synapshare-release.jks" >> "$GITHUB_ENV"
+
       - name: Build APKs
         working-directory: android
+        env:
+          SYNAPSHARE_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          SYNAPSHARE_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          SYNAPSHARE_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug assembleRelease
+
+      - name: Verify APK signatures
+        run: |
+          set -euo pipefail
+          APKSIGNER="$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)"
+          shopt -s nullglob
+          apks=(android/app/build/outputs/apk/*/*.apk)
+          [ "${#apks[@]}" -gt 0 ] || { echo "::error::No APKs were built."; exit 1; }
+          for apk in "${apks[@]}"; do
+            case "$apk" in *unsigned*) echo "::error::$apk is unsigned"; exit 1;; esac
+            "$APKSIGNER" verify --verbose --print-certs "$apk"
+          done
+          rm -f "$RUNNER_TEMP/synapshare-release.jks"
 
       - name: Upload APKs to GitHub Release
         shell: bash
